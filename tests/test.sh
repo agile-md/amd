@@ -1454,6 +1454,59 @@ assert "amd board --tag narrows every column to tasks carrying that tag" \
     && test \"\$(echo \"\$out\" | grep -c 'Old backlog ticket')\" = 1"
 assert "amd <destination> --tag with no matches lists an empty column, not an error" \
   bash -c "cd '${import_dst}' && '${AMD}' backlog --tag NO-SUCH-TAG --plain | grep -q '(empty)'"
+assert "amd import tickets <PATH> is the same import (ticket 079)" \
+  bash -c "cd '${import_dst}' && '${AMD}' import tickets '${import_src}' --dry-run | grep -q 'would import 3 tickets'"
+assert "...and refuses --into, which is for documents" \
+  bash -c "cd '${import_dst}' && ! '${AMD}' import tickets '${import_src}' --into x 2>/dev/null"
+
+echo "importing documents (ticket 079):"
+# A project folder: proj-tickets, and proj-documents with a bare origin; and
+# a tree of old documents somewhere else.
+dm="$(mktemp -d)"
+dm_env="XDG_CONFIG_HOME=${dm}/config"
+(
+  set -e
+  export XDG_CONFIG_HOME="${dm}/config"
+  cd "${dm}"
+  git init -q --bare -b main origin-documents.git
+  git init -q -b main proj-tickets && git clone -q origin-documents.git proj-documents 2>/dev/null
+  for r in proj-tickets proj-documents; do
+    git -C "${r}" config user.email t@t.co && git -C "${r}" config user.name t && git -C "${r}" config commit.gpgsign false
+  done
+  ( cd proj-tickets && AMD_COMMIT=0 "${AMD}" init proj --local-only >/dev/null 2>&1 && "${AMD}" register . >/dev/null 2>&1 )
+  mkdir -p proj-documents/adr && echo "# Already here" > proj-documents/adr/0001-x.md
+  git -C proj-documents add -A && git -C proj-documents commit -q -m "seed for ticket 079" && git -C proj-documents push -q origin main 2>/dev/null
+  mkdir -p old/adr old/img old/.obsidian
+  printf '# Old docs\n![d](img/d.png) [a](adr/0001-x.md)\n' > old/README.md
+  echo "# X" > old/adr/0001-x.md
+  echo "# Y" > old/adr/0002-y.md
+  echo png > old/img/d.png
+  echo unused > old/img/unused.png
+  echo "# hidden" > old/.obsidian/h.md
+)
+assert "amd import documents --dry-run lists the files and writes nothing" \
+  bash -c "cd '${dm}/old' && out=\"\$(env ${dm_env} '${AMD}' import documents --project proj --dry-run 2>&1)\" \
+    && grep -q 'would add README.md' <<<\"\${out}\" && grep -q 'would add img/d.png' <<<\"\${out}\" \
+    && grep -q 'skipped adr/0001-x.md: already in proj-documents' <<<\"\${out}\" \
+    && ! grep -q 'unused.png\|obsidian' <<<\"\${out}\" \
+    && test \"\$(git -C '${dm}/proj-documents' branch --list | wc -l)\" = 1"
+assert "amd import documents commits on a new branch, pushes it, and goes back to main" \
+  bash -c "cd '${dm}/old' && env ${dm_env} '${AMD}' import documents --project proj >/dev/null 2>&1 \
+    && b=\"\$(git -C '${dm}/proj-documents' branch --list 'chore/import-documents-*' | tr -d ' *')\" && test -n \"\${b}\" \
+    && test \"\$(git -C '${dm}/proj-documents' branch --show-current)\" = main \
+    && ! test -e '${dm}/proj-documents/README.md' \
+    && git -C '${dm}/proj-documents' show \"\${b}:adr/0002-y.md\" | grep -q '# Y' \
+    && git -C '${dm}/proj-documents' show \"\${b}:img/d.png\" >/dev/null \
+    && git -C '${dm}/proj-documents' show \"\${b}:adr/0001-x.md\" | grep -q 'Already here' \
+    && git -C '${dm}/origin-documents.git' rev-parse --verify -q \"\${b}\" >/dev/null"
+assert "...from inside the project it needs no --project, and --into puts the tree in a folder" \
+  bash -c "cd '${dm}/proj-tickets' && env ${dm_env} '${AMD}' import documents '${dm}/old' --into archive/old --dry-run 2>&1 \
+    | grep -q 'would add archive/old/adr/0001-x.md'"
+assert "...and a documents clone with uncommitted changes is refused" \
+  bash -c "echo changed >> '${dm}/proj-documents/adr/0001-x.md' \
+    && cd '${dm}/old' && ! env ${dm_env} '${AMD}' import documents --project proj 2>&1 | grep -q 'imported' \
+    && git -C '${dm}/proj-documents' checkout -q -- adr/0001-x.md"
+rm -rf "${dm}"
 
 echo "locking:"
 lock_repo="$(mktemp -d)"

@@ -261,6 +261,33 @@ project out on this machine (`--unhide` puts it back, `--all` shows
 everything); scratch boards under the temporary directory are never
 listed. It reads each board as this machine last saw it.
 
+## Bringing in existing work
+
+`amd import tickets <PATH>` copies another board's tickets into this one
+(a bare `amd import <PATH>` does the same): each keeps its column, gets a
+fresh number, and keeps its parent and related links within the batch;
+a ticket with the same title as one already here is tagged `DUPLICATE`.
+
+`amd import documents [PATH]` copies a folder of documents (the current
+directory by default) into the project's `{project}-documents`
+repository:
+
+```
+cd ~/old-notes
+amd import documents --project acme --dry-run   # what would be added
+amd import documents --project acme             # branch, commit, push, pull request
+```
+
+The folder is mirrored as it is (or under `--into <dir>`): every markdown
+file, and every picture or other file a document links to. Hidden files
+and folders are left out. A file the repository already has is never
+overwritten; it's skipped and listed. Documents are reviewed, so the
+import goes on a new `chore/import-documents-…` branch from the default
+branch, is pushed, and a pull request is opened with `gh` when the
+repository is on GitHub (otherwise amd prints what's left to do). Your
+clone goes back to the branch it was on. From inside the project,
+`--project` isn't needed. `--dry-run` works for both kinds.
+
 ## Working together, and getting tickets back
 
 Every change amd makes is committed and pushed, and before each command it

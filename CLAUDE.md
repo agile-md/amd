@@ -146,6 +146,23 @@ redundant. Their history is in git if it is ever wanted again.
   destination. A ticket that fails to parse (no frontmatter, unreadable) is
   skipped and reported, not a hard failure for the whole batch. `--dry-run`
   computes and reports everything without writing or spending an id.
+- `crates/amd-lib/src/import_documents.rs` — `amd import documents
+  [PATH] [--into DIR] [--project NAME] [--dry-run]` (ticket 079; `amd
+  import` takes `tickets <PATH>` or `documents [PATH]`, and a bare path is
+  still tickets). `plan` mirrors the tree: markdown, plus files a document
+  links to or shows inside the tree (a link scan, not a parser), hidden
+  files skipped, symlinks not followed; an existing destination is a
+  clash, skipped and listed, never overwritten. It refuses the documents
+  repository itself, a folder inside it, or one holding it. `apply`
+  refuses a clone with uncommitted tracked changes or a detached HEAD,
+  fetches, branches `chore/import-documents-<UTC stamp>` from
+  `origin/HEAD` (else `origin/<current>`, else the current branch),
+  commits, pushes, opens a PR with `gh` only when `origin` is on
+  github.com (else prints what's left), and switches back. Handled before
+  `ensure_board()` so it never offers to create a board; `--project`
+  resolves through the registry (scratch boards included, unlike My
+  work), else `Board::discover()`. The target is
+  `documents::sources`' own repository.
 - `crates/amd-cli/src/main.rs` — the `amd` binary: clap CLI and command handlers; it also owns
   `form.rs`, `value.rs`, `completions.rs` and `init.rs`, which are CLI-only.
 - `crates/amd-cli/src/init.rs` — `amd init <project>`: finds or creates

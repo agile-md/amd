@@ -234,17 +234,31 @@ enum Cmd {
         #[command(subcommand)]
         action: Option<TagsAction>,
     },
-    /// Import tickets from an existing tasks directory tree: status kept,
-    /// ids renumbered, links remapped within the batch, same-titled
-    /// tickets flagged DUPLICATE
+    /// Import tickets or documents. `amd import tickets <PATH>`: a tasks
+    /// tree, status kept, ids renumbered, links remapped within the batch,
+    /// same-titled tickets flagged DUPLICATE (a bare `amd import <PATH>` is
+    /// the same). `amd import documents [PATH]`: a tree of documents (here,
+    /// by default) into the project's documents repository, on a new
+    /// branch with a pull request
     Import {
-        /// Path to the tasks directory tree to import from (the directory
-        /// that itself contains backlog/todo/doing/done, not their parent)
+        /// `tickets` or `documents`; or, on its own, a tasks tree's path
+        #[arg(value_name = "TYPE|PATH")]
+        first: String,
+        /// The tree to import: for tickets, the directory holding
+        /// backlog/todo/doing/done; for documents, any folder (default: the
+        /// current directory)
         #[arg(value_name = "PATH")]
-        path: PathBuf,
+        path: Option<PathBuf>,
         /// Preview what would happen without writing anything
         #[arg(long)]
         dry_run: bool,
+        /// Documents: put the tree under this folder of the documents
+        /// repository (default: its root)
+        #[arg(long, value_name = "DIR")]
+        into: Option<String>,
+        /// Documents: the project to import into, when you aren't inside it
+        #[arg(long, value_name = "NAME")]
+        project: Option<String>,
     },
     /// Move a task into backlog/, or list it with no ref
     Backlog {
@@ -720,6 +734,24 @@ fn run() -> Result<()> {
     {
         return cmd_mine(*all, sort, *json, hide.as_deref(), unhide.as_deref());
     }
+    // Documents go into the project's documents repository, from wherever
+    // they are: no board needed here, and none offered (ticket 079).
+    if let Cmd::Import {
+        first,
+        path,
+        dry_run,
+        into,
+        project,
+    } = &command
+        && first == "documents"
+    {
+        return cmd_import_documents(
+            path.as_deref(),
+            *dry_run,
+            into.as_deref(),
+            project.as_deref(),
+        );
+    }
     if let Cmd::Project { action } = command {
         return match action {
             None => project::list(),
@@ -757,7 +789,26 @@ fn run() -> Result<()> {
         Cmd::Board { tag } => render::columns(&board, &Column::ALL, tag.as_deref()),
         Cmd::Tag { tag } => render::named(&format!("tag: {tag}"), board.tasks_tagged(&tag)?, None),
         Cmd::Tags { action } => cmd_tags(&board, action),
-        Cmd::Import { path, dry_run } => cmd_import(&board, &path, dry_run),
+        Cmd::Import {
+            first,
+            path,
+            dry_run,
+            into,
+            project,
+        } => {
+            if into.is_some() || project.is_some() {
+                bail!("--into and --project are for `amd import documents`");
+            }
+            let path = match (first.as_str(), path) {
+                ("tickets", Some(path)) => path,
+                ("tickets", None) => bail!("usage: amd import tickets <PATH>"),
+                (_, None) => PathBuf::from(first),
+                (_, Some(_)) => {
+                    bail!("amd import takes `tickets <PATH>` or `documents [PATH]`, not {first:?}")
+                }
+            };
+            cmd_import(&board, &path, dry_run)
+        }
         Cmd::Backlog { task, tag } => cmd_destination(
             &board,
             Destination::Column(Column::Backlog),
@@ -2242,6 +2293,96 @@ fn cmd_import(board: &Board, path: &Path, dry_run: bool) -> Result<()> {
         line.push_str(" — nothing written");
     }
     println!("{line}");
+    Ok(())
+}
+
+/// `amd import documents [PATH]` (ticket 079): the tree at `path` (here by
+/// default) into the project's documents repository, on a new branch,
+/// pushed, with a pull request. `--dry-run` only shows the plan.
+fn cmd_import_documents(
+    path: Option<&Path>,
+    dry_run: bool,
+    into: Option<&str>,
+    project: Option<&str>,
+) -> Result<()> {
+    let board = match project {
+        Some(name) => {
+            // Every registered board, scratch ones too (My work leaves
+            // those out; naming one here is deliberate).
+            let found: Vec<PathBuf> = Registry::load()
+                .entries
+                .into_iter()
+                .filter(|e| e.has_board())
+                .filter(|e| agile_md::current_project::project_name(&e.root) == name)
+                .map(|e| e.root)
+                .collect();
+            match found.as_slice() {
+                [one] => Board::in_repo(one),
+                [] => bail!("no project called {name} on this machine (amd mine lists them)"),
+                _ => bail!(
+                    "{name} is in more than one folder: {}; run this from inside the one you mean",
+                    found
+                        .iter()
+                        .map(|root| agile_md::registry::project_dir_of(root)
+                            .display()
+                            .to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            }
+        }
+        None => Board::discover()
+            .context("which project? run this from inside it, or name it with --project <name>")?,
+    };
+    let own = agile_md::documents::sources(&board)
+        .into_iter()
+        .find(|s| s.kind == agile_md::documents::Kind::Own)
+        .context("this project has no documents repository")?;
+    let Some(repo) = own.root else {
+        bail!(
+            "{} isn't cloned on this machine; clone it beside the project's other repositories first",
+            own.name
+        );
+    };
+    let source = match path {
+        Some(path) => path.to_path_buf(),
+        None => env::current_dir().context("reading the current directory")?,
+    };
+    let plan = agile_md::import_documents::plan(&source, &repo, into)?;
+    for clash in &plan.clashes {
+        eprintln!("skipped {clash}: already in {}", own.name);
+    }
+    if plan.copies.is_empty() {
+        println!("nothing to import from {}", plan.source.display());
+        return Ok(());
+    }
+    for (_, to) in &plan.copies {
+        println!("{} {to}", if dry_run { "would add" } else { "added" });
+    }
+    let count = plan.copies.len();
+    let files = if count == 1 { "file" } else { "files" };
+    if dry_run {
+        println!(
+            "would import {count} {files} into {} on a new branch — nothing written",
+            own.name
+        );
+        return Ok(());
+    }
+    let outcome = agile_md::import_documents::apply(&plan)?;
+    println!(
+        "imported {count} {files} into {} on {} (from {})",
+        own.name, outcome.branch, outcome.base
+    );
+    if let Some(address) = &outcome.pull_request {
+        println!("pull request: {address}");
+    }
+    if let Some(warning) = &outcome.warning {
+        eprintln!("amd: {warning}");
+    }
+    for step in &outcome.still_to_do {
+        println!("still to do: {step}");
+    }
+    eprintln!("{} is back on {}", own.name, outcome.back_on);
     Ok(())
 }
 

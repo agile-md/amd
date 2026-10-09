@@ -830,6 +830,23 @@ pub fn config(repo: &Path, key: &str) -> Option<String> {
     }
 }
 
+/// `git -C repo <args>`, its stdout trimmed; an error carrying git's own
+/// reason when it fails. For commands whose output is wanted, not shown.
+pub fn checked(repo: &Path, args: &[&str]) -> Result<String> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(args)
+        .stdin(Stdio::null())
+        .output()
+        .with_context(|| format!("running git {}", args.join(" ")))?;
+    if !out.status.success() {
+        let detail = String::from_utf8_lossy(&out.stderr);
+        bail!(failed(&format!("git {}", args.join(" ")), detail.trim()));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
