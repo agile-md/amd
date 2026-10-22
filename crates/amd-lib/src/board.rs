@@ -322,22 +322,23 @@ impl Board {
         self.read_workflow().1
     }
 
-    /// The workflow and any problem with it, read once per change to the
+    /// The workflow and any problem with it, parsed once per change to the
     /// settings file: every listing asks for it, often many times.
+    ///
+    /// A change is a change to the file's contents (ticket 317). Its
+    /// modified time and size aren't enough: a reorder swaps two names,
+    /// keeping the size, and two writes a few milliseconds apart often get
+    /// the same time (always on Windows, sometimes on Linux), so the old
+    /// order was kept. The file is a few hundred bytes; reading it costs
+    /// about what asking for its time did.
     fn read_workflow(&self) -> (crate::workflow::Workflow, Option<String>) {
         use crate::workflow::Workflow;
         use std::collections::HashMap;
         use std::sync::{Mutex, OnceLock};
-        type Seen = (
-            Option<(std::time::SystemTime, u64)>,
-            Workflow,
-            Option<String>,
-        );
+        type Seen = (Option<Vec<u8>>, Workflow, Option<String>);
         static CACHE: OnceLock<Mutex<HashMap<PathBuf, Seen>>> = OnceLock::new();
         let path = crate::board_settings::path(self);
-        let stamp = fs::metadata(&path)
-            .ok()
-            .and_then(|m| Some((m.modified().ok()?, m.len())));
+        let stamp = fs::read(&path).ok();
         let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
         if let Ok(seen) = cache.lock()
             && let Some((when, workflow, problem)) = seen.get(&path)

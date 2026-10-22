@@ -462,6 +462,34 @@ mod tests {
     }
 
     #[test]
+    fn a_reorder_is_seen_whatever_the_settings_file_s_time_and_size() {
+        // Ticket 317: Windows gives two quick writes the same modified time
+        // and a reorder keeps the size, so a cache keyed on those missed it.
+        let (_dir, board) = board();
+        let review = add(&board, "Review", Kind::Doing, Position::End, None).unwrap();
+        assert_eq!(
+            folders(&board),
+            ["backlog", "todo", "doing", "done", "review"]
+        );
+        let path = board_settings::path(&board);
+        let before = fs::metadata(&path).unwrap();
+        reorder(&board, review, Position::Before(Column::Done)).unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(before.modified().unwrap())
+            .unwrap();
+        let after = fs::metadata(&path).unwrap();
+        assert_eq!(after.len(), before.len());
+        assert_eq!(after.modified().unwrap(), before.modified().unwrap());
+        assert_eq!(
+            folders(&board),
+            ["backlog", "todo", "doing", "review", "done"]
+        );
+    }
+
+    #[test]
     fn only_an_added_column_goes_and_its_tickets_go_somewhere_first() {
         let (_dir, board) = board();
         let review = add(
